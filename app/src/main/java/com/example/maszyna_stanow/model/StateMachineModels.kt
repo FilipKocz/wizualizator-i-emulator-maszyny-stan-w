@@ -7,7 +7,8 @@ data class StateNode(
     val name: String,
     val position: Offset = Offset.Zero,
     val isInitial: Boolean = false,
-    val isFinal: Boolean = false
+    val isFinal: Boolean = false,
+    val message: String = ""
 )
 
 data class Transition(
