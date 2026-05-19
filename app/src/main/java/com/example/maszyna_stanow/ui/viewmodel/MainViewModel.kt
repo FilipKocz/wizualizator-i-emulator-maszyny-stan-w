@@ -1,15 +1,32 @@
 package com.example.maszyna_stanow.ui.viewmodel
 
+import android.app.Application
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
-import androidx.lifecycle.ViewModel
-import com.example.maszyna_stanow.model.StateNode
-import com.example.maszyna_stanow.model.Transition
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
+import com.example.maszyna_stanow.data.AppDatabase
+import com.example.maszyna_stanow.model.*
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import java.util.UUID
 
-class MainViewModel : ViewModel() {
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val db = AppDatabase.getDatabase(application)
+    private val dao = db.stateMachineDao()
+
+    val allProjects: StateFlow<List<FullProject>> = dao.getAllProjects()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private var currentProjectId = 0L
+    private val _projectName = mutableStateOf("Mój Projekt")
+    val projectName: State<String> = _projectName
+
     private val _states = mutableStateListOf<StateNode>()
     val states: List<StateNode> = _states
 
@@ -34,151 +51,198 @@ class MainViewModel : ViewModel() {
     private val _activeStateId = mutableStateOf<String?>(null)
     val activeStateId: State<String?> = _activeStateId
 
-    // Etap 4: Historia przejść
     private val _history = mutableStateListOf<String>()
     val history: List<String> = _history
 
-    fun addState(name: String, position: Offset, isInitial: Boolean = false, isFinal: Boolean = false) {
-        val newState = StateNode(
-            id = UUID.randomUUID().toString(),
-            name = name,
-            position = position,
-            isInitial = isInitial,
-            isFinal = isFinal
-        )
-        _states.add(newState)
-        if (_activeStateId.value == null && isInitial) {
-            _activeStateId.value = newState.id
-        }
+    private val _isValid = mutableStateOf(false)
+    val isValid: State<Boolean> = _isValid
+
+    private val _validationMessage = mutableStateOf("Brak punktów")
+    val validationMessage: State<String> = _validationMessage
+
+    fun updateProjectName(newName: String) {
+        _projectName.value = newName
     }
 
-    fun updateStateMessage(id: String, newMessage: String) {
-        val index = _states.indexOfFirst { it.id == id }
-        if (index != -1) {
-            _states[index] = _states[index].copy(message = newMessage)
-        }
-    }
-
-    fun toggleSimulation(active: Boolean) {
-        _isSimulationActive.value = active
-        if (active) {
-            resetSimulation()
-            selectState(null)
-            _isMoveMode.value = false
-        }
-    }
-
-    fun updateTransitionSignal(id: String, newSignal: String) {
-        val index = _transitions.indexOfFirst { it.id == id }
-        if (index != -1) {
-            _transitions[index] = _transitions[index].copy(signal = newSignal)
-        }
-    }
-
-    fun processSignal(signalName: String) {
-        val currentId = _activeStateId.value ?: _states.find { it.isInitial }?.id ?: return
-        val transition = _transitions.find { it.fromStateId == currentId && it.signal == signalName }
-        
-        if (transition != null) {
-            val fromStateName = _states.find { it.id == currentId }?.name ?: "???"
-            val toStateName = _states.find { it.id == transition.toStateId }?.name ?: "???"
-            
-            // Dodaj do historii
-            _history.add("$fromStateName --($signalName)--> $toStateName")
-            
-            _activeStateId.value = transition.toStateId
-        }
-    }
-
-    fun resetSimulation() {
-        _activeStateId.value = _states.find { it.isInitial }?.id
-        _history.clear()
-        _activeStateId.value?.let { id ->
-            val startName = _states.find { it.id == id }?.name ?: "Start"
-            _history.add("Rozpoczęto w: $startName")
-        }
-    }
-
-    fun toggleMoveMode() {
-        _isMoveMode.value = !_isMoveMode.value
-        _transitionSourceId.value = null
+    fun createNewProject() {
+        currentProjectId = 0L
+        _projectName.value = "Nowy Projekt"
+        _states.clear()
+        _transitions.clear()
+        _selectedState.value = null
         _selectedTransition.value = null
+        _activeStateId.value = null
+        _history.clear()
+        validateMachine()
+    }
+
+    fun deleteProject(projectId: Long) {
+        viewModelScope.launch {
+            dao.deleteProject(projectId)
+        }
+    }
+
+    fun saveProject() {
+        viewModelScope.launch {
+            db.withTransaction {
+                val pId = if (currentProjectId == 0L) {
+                    dao.insertProject(ProjectEntity(name = _projectName.value))
+                } else {
+                    dao.insertProject(ProjectEntity(id = currentProjectId, name = _projectName.value))
+                    currentProjectId
+                }
+                currentProjectId = pId
+
+                dao.deleteStatesByProject(pId)
+                dao.deleteTransitionsByProject(pId)
+
+                if (_states.isNotEmpty()) {
+                    dao.insertStates(_states.map { 
+                        StateEntity(it.id, pId, it.name, it.position.x, it.position.y, it.isInitial, it.isFinal, it.message) 
+                    })
+                }
+                if (_transitions.isNotEmpty()) {
+                    dao.insertTransitions(_transitions.map { 
+                        TransitionEntity(it.id, pId, it.fromStateId, it.toStateId, it.signal) 
+                    })
+                }
+            }
+        }
+    }
+
+    fun loadProject(fullProject: FullProject) {
+        currentProjectId = fullProject.project.id
+        _projectName.value = fullProject.project.name
+        _states.clear()
+        _states.addAll(fullProject.states.map { 
+            StateNode(it.id, it.name, Offset(it.posX, it.posY), it.isInitial, it.isFinal, it.message) 
+        })
+        _transitions.clear()
+        _transitions.addAll(fullProject.transitions.map { 
+            Transition(it.id, it.fromStateId, it.toStateId, it.signal) 
+        })
+        _activeStateId.value = _states.find { it.isInitial }?.id
+        validateMachine()
+    }
+
+    fun validateMachine() {
+        val initialState = _states.find { it.isInitial }
+        val finalStates = _states.filter { it.isFinal }
+        if (initialState == null) {
+            _isValid.value = false
+            _validationMessage.value = "Brak punktu START"
+            return
+        }
+        if (finalStates.isEmpty()) {
+            _isValid.value = false
+            _validationMessage.value = "Brak punktu KONIEC"
+            return
+        }
+        val visited = mutableSetOf<String>()
+        val queue = mutableListOf(initialState.id)
+        visited.add(initialState.id)
+        var foundFinal = false
+        while (queue.isNotEmpty()) {
+            val curr = queue.removeAt(0)
+            if (finalStates.any { it.id == curr }) {
+                foundFinal = true
+                break
+            }
+            _transitions.filter { it.fromStateId == curr }.forEach {
+                if (it.toStateId !in visited) {
+                    visited.add(it.toStateId)
+                    queue.add(it.toStateId)
+                }
+            }
+        }
+        _isValid.value = foundFinal
+        _validationMessage.value = if (foundFinal) "Logika poprawna" else "Brak ścieżki do końca"
+    }
+
+    fun addState(name: String, position: Offset) {
+        _states.add(StateNode(UUID.randomUUID().toString(), name, position, false, false))
+        validateMachine()
+    }
+
+    fun updateStateMessage(id: String, msg: String) {
+        val i = _states.indexOfFirst { it.id == id }
+        if (i != -1) _states[i] = _states[i].copy(message = msg)
+    }
+
+    fun updateTransitionSignal(id: String, sig: String) {
+        val i = _transitions.indexOfFirst { it.id == id }
+        if (i != -1) _transitions[i] = _transitions[i].copy(signal = sig)
+        validateMachine()
+    }
+
+    fun toggleInitial(id: String) {
+        val currentState = _states.find { it.id == id }
+        val becomesInitial = currentState?.isInitial == false
+        for (i in _states.indices) {
+            _states[i] = _states[i].copy(isInitial = _states[i].id == id && becomesInitial)
+        }
+        _activeStateId.value = _states.find { it.isInitial }?.id
+        validateMachine()
+    }
+
+    fun toggleFinal(id: String) {
+        val i = _states.indexOfFirst { it.id == id }
+        if (i != -1) _states[i] = _states[i].copy(isFinal = !_states[i].isFinal)
+        validateMachine()
+    }
+
+    fun updateStatePosition(id: String, pos: Offset) {
+        val i = _states.indexOfFirst { it.id == id }
+        if (i != -1) _states[i] = _states[i].copy(position = pos)
+        _isMoveMode.value = false
+    }
+
+    fun deleteSelectedState() {
+        _selectedState.value?.let { s ->
+            _transitions.removeIf { it.fromStateId == s.id || it.toStateId == s.id }
+            _states.remove(s)
+            _selectedState.value = null
+            validateMachine()
+        }
+    }
+
+    fun deleteSelectedTransition() {
+        _selectedTransition.value?.let { t -> 
+            _transitions.remove(t)
+            _selectedTransition.value = null
+            validateMachine() 
+        }
+    }
+
+    fun toggleMoveMode() { _isMoveMode.value = !_isMoveMode.value }
+    fun toggleSimulation(act: Boolean) { _isSimulationActive.value = act; if (act) resetSimulation() }
+    fun selectState(s: StateNode?) { _selectedState.value = s; _selectedTransition.value = null }
+    fun selectTransition(t: Transition?) { _selectedTransition.value = t; _selectedState.value = null }
+    fun resetSimulation() { _activeStateId.value = _states.find { it.isInitial }?.id; _history.clear() }
+
+    fun processSignal(sig: String) {
+        val currId = _activeStateId.value ?: return
+        val t = _transitions.find { it.fromStateId == currId && it.signal == sig }
+        if (t != null) {
+            val fromName = _states.find { it.id == currId }?.name ?: ""
+            val toName = _states.find { it.id == t.toStateId }?.name ?: ""
+            _history.add("$fromName --($sig)--> $toName")
+            _activeStateId.value = t.toStateId
+        }
     }
 
     fun toggleTransitionMode() {
         if (_transitionSourceId.value == null) {
             _transitionSourceId.value = _selectedState.value?.id
         } else {
+            val fromId = _transitionSourceId.value!!
             val toId = _selectedState.value?.id
-            val fromId = _transitionSourceId.value
-            if (toId != null && fromId != null) {
-                val outTransitionsCount = _transitions.count { it.fromStateId == fromId }
-                addTransition(fromId, toId, outTransitionsCount.toString())
+            if (toId != null) {
+                val sig = _transitions.count { it.fromStateId == fromId }.toString()
+                _transitions.add(Transition(UUID.randomUUID().toString(), fromId, toId, sig))
+                validateMachine()
             }
             _transitionSourceId.value = null
         }
-    }
-
-    fun updateStatePosition(id: String, newPosition: Offset) {
-        val index = _states.indexOfFirst { it.id == id }
-        if (index != -1) {
-            _states[index] = _states[index].copy(position = newPosition)
-        }
-        _isMoveMode.value = false
-    }
-
-    fun toggleInitial(id: String) {
-        val index = _states.indexOfFirst { it.id == id }
-        if (index != -1) {
-            val isCurrentlyInitial = _states[index].isInitial
-            for (i in _states.indices) {
-                _states[i] = _states[i].copy(isInitial = false)
-            }
-            _states[index] = _states[index].copy(isInitial = !isCurrentlyInitial)
-            if (_states[index].isInitial) _activeStateId.value = id
-        }
-    }
-
-    fun toggleFinal(id: String) {
-        val index = _states.indexOfFirst { it.id == id }
-        if (index != -1) {
-            _states[index] = _states[index].copy(isFinal = !_states[index].isFinal)
-        }
-    }
-
-    fun deleteSelectedState() {
-        _selectedState.value?.let { state ->
-            _transitions.removeIf { it.fromStateId == state.id || it.toStateId == state.id }
-            _states.remove(state)
-            _selectedState.value = null
-        }
-    }
-
-    fun deleteSelectedTransition() {
-        _selectedTransition.value?.let { transition ->
-            _transitions.remove(transition)
-            _selectedTransition.value = null
-        }
-    }
-
-    fun selectState(state: StateNode?) {
-        _selectedState.value = state
-        _selectedTransition.value = null
-    }
-
-    fun selectTransition(transition: Transition?) {
-        _selectedTransition.value = transition
-        _selectedState.value = null
-    }
-
-    private fun addTransition(fromId: String, toId: String, signal: String) {
-        var finalSignal = signal
-        var counter = 1
-        while (_transitions.any { it.fromStateId == fromId && it.signal == finalSignal }) {
-            finalSignal = "$signal($counter)"
-            counter++
-        }
-        val newTransition = Transition(UUID.randomUUID().toString(), fromId, toId, finalSignal)
-        _transitions.add(newTransition)
     }
 }

@@ -3,6 +3,7 @@ package com.example.maszyna_stanow.ui.screens
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,12 +43,46 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val transitionSourceId by viewModel.transitionSourceId
     val activeStateId by viewModel.activeStateId
     val isSimulationActive by viewModel.isSimulationActive
+    val projectName by viewModel.projectName
+    
+    val allProjects by viewModel.allProjects.collectAsState()
+    var showProjectList by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (isSimulationActive) "Tryb Symulacji" else "Edytor Maszyny Stanów") },
+                title = { 
+                    if (isSimulationActive) {
+                        Text(projectName)
+                    } else {
+                        TextField(
+                            value = projectName,
+                            onValueChange = { viewModel.updateProjectName(it) },
+                            placeholder = { Text("Nazwa projektu...") },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = MaterialTheme.colorScheme.primary
+                            ),
+                            textStyle = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
                 actions = {
+                    if (!isSimulationActive) {
+                        IconButton(onClick = { viewModel.createNewProject() }) {
+                            Icon(Icons.Default.AddCircle, contentDescription = "Nowy")
+                        }
+                        IconButton(onClick = { viewModel.saveProject() }) {
+                            Icon(Icons.Default.Check, contentDescription = "Zapisz", tint = Color(0xFF2E7D32))
+                        }
+                        IconButton(onClick = { showProjectList = true }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Lista")
+                        }
+                    }
                     TextButton(onClick = { viewModel.toggleSimulation(!isSimulationActive) }) {
                         Icon(if (isSimulationActive) Icons.Default.Edit else Icons.Default.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(4.dp))
@@ -58,7 +94,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         floatingActionButton = {
             if (!isSimulationActive && transitionSourceId == null) {
                 FloatingActionButton(onClick = {
-                    viewModel.addState("S${viewModel.states.size}", Offset(200f + (viewModel.states.size % 3) * 100f, 200f + (viewModel.states.size / 3) * 100f))
+                    viewModel.addState("S${viewModel.states.size}", Offset(200f, 300f))
                 }) {
                     Icon(Icons.Default.Add, contentDescription = "Dodaj stan")
                 }
@@ -75,11 +111,14 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 messageText = it
                                 viewModel.updateStateMessage(selectedState!!.id, it)
                             },
-                            label = { Text("Wiadomość stanu") },
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                            label = { Text("Wiadomość") },
+                            modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                         )
                         IconButton(onClick = { viewModel.toggleInitial(selectedState!!.id) }) {
                             Icon(Icons.Default.PlayArrow, contentDescription = "Start", tint = if (selectedState!!.isInitial) Color.Blue else Color.Gray)
+                        }
+                        IconButton(onClick = { viewModel.toggleFinal(selectedState!!.id) }) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = "Koniec", tint = if (selectedState!!.isFinal) Color.Red else Color.Gray)
                         }
                         IconButton(onClick = { viewModel.toggleMoveMode() }) {
                             Icon(Icons.Default.Build, contentDescription = "Przesuń", tint = if (isMoveMode) Color.Green else Color.Gray)
@@ -114,6 +153,34 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         } else {
             EditorView(viewModel, innerPadding)
         }
+
+        if (showProjectList) {
+            AlertDialog(
+                onDismissRequest = { showProjectList = false },
+                title = { Text("Zapisane Projekty") },
+                text = {
+                    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                        items(allProjects) { fullProject ->
+                            ListItem(
+                                headlineContent = { Text(fullProject.project.name) },
+                                modifier = Modifier.clickable {
+                                    viewModel.loadProject(fullProject)
+                                    showProjectList = false
+                                },
+                                trailingContent = {
+                                    IconButton(onClick = { viewModel.deleteProject(fullProject.project.id) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Usuń", tint = Color.Red)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showProjectList = false }) { Text("Zamknij") }
+                }
+            )
+        }
     }
 }
 
@@ -124,12 +191,27 @@ fun EditorView(viewModel: MainViewModel, innerPadding: PaddingValues) {
     val isMoveMode by viewModel.isMoveMode
     val transitionSourceId by viewModel.transitionSourceId
     val activeStateId by viewModel.activeStateId
+    val isValid by viewModel.isValid
+    val validationMessage by viewModel.validationMessage
 
-    Box(
-        modifier = Modifier
-            .padding(innerPadding)
-            .fillMaxSize()
-            .pointerInput(Unit) {
+    Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
+        Surface(
+            color = if (isValid) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+            modifier = Modifier.fillMaxWidth().border(1.dp, if (isValid) Color.Green else Color.Red)
+        ) {
+            Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (isValid) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = if (isValid) Color(0xFF2E7D32) else Color.Red
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(text = validationMessage, fontWeight = FontWeight.Bold, color = if (isValid) Color(0xFF2E7D32) else Color.Red)
+            }
+        }
+
+        Box(
+            modifier = Modifier.fillMaxSize().padding(top = 40.dp).pointerInput(Unit) {
                 detectTapGestures(onTap = { offset ->
                     if (isMoveMode && selectedState != null) {
                         viewModel.updateStatePosition(selectedState!!.id, offset - Offset(110f, 110f))
@@ -143,46 +225,47 @@ fun EditorView(viewModel: MainViewModel, innerPadding: PaddingValues) {
                     }
                 })
             }
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            viewModel.transitions.forEach { transition ->
-                val fromState = viewModel.states.find { it.id == transition.fromStateId }
-                val toState = viewModel.states.find { it.id == transition.toStateId }
-                if (fromState != null && toState != null) {
-                    val start = fromState.position + Offset(40.dp.toPx(), 40.dp.toPx())
-                    val end = toState.position + Offset(40.dp.toPx(), 40.dp.toPx())
-                    val isSelected = selectedTransition?.id == transition.id
-                    drawLine(
-                        color = if (isSelected) Color.Blue else Color.Black,
-                        start = start, end = end,
-                        strokeWidth = if (isSelected) 8f else 4f,
-                        cap = StrokeCap.Round
-                    )
-                    drawArrowHead(start, end, color = if (isSelected) Color.Blue else Color.Black)
-                    drawContext.canvas.nativeCanvas.drawText(
-                        transition.signal, (start.x + end.x) / 2, (start.y + end.y) / 2 - 20f,
-                        android.graphics.Paint().apply {
-                            color = android.graphics.Color.BLACK
-                            textSize = 35f
-                            textAlign = android.graphics.Paint.Align.CENTER
-                        }
-                    )
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                viewModel.transitions.forEach { transition ->
+                    val fromState = viewModel.states.find { it.id == transition.fromStateId }
+                    val toState = viewModel.states.find { it.id == transition.toStateId }
+                    if (fromState != null && toState != null) {
+                        val start = fromState.position + Offset(40.dp.toPx(), 40.dp.toPx())
+                        val end = toState.position + Offset(40.dp.toPx(), 40.dp.toPx())
+                        val isSelected = selectedTransition?.id == transition.id
+                        drawLine(
+                            color = if (isSelected) Color.Blue else Color.Black,
+                            start = start, end = end,
+                            strokeWidth = if (isSelected) 8f else 4f,
+                            cap = StrokeCap.Round
+                        )
+                        drawArrowHead(start, end, color = if (isSelected) Color.Blue else Color.Black)
+                        drawContext.canvas.nativeCanvas.drawText(
+                            transition.signal, (start.x + end.x) / 2, (start.y + end.y) / 2 - 20f,
+                            android.graphics.Paint().apply {
+                                color = android.graphics.Color.BLACK
+                                textSize = 35f
+                                textAlign = android.graphics.Paint.Align.CENTER
+                            }
+                        )
+                    }
                 }
             }
-        }
 
-        viewModel.states.forEach { state ->
-            StateNodeView(
-                stateNode = state,
-                isSelected = selectedState?.id == state.id,
-                isMoveMode = isMoveMode || (transitionSourceId != null && selectedState?.id == state.id),
-                isActive = activeStateId == state.id,
-                onClick = { viewModel.selectState(state) }
-            )
+            viewModel.states.forEach { state ->
+                StateNodeView(
+                    stateNode = state,
+                    isSelected = selectedState?.id == state.id,
+                    isMoveMode = isMoveMode || (transitionSourceId != null && selectedState?.id == state.id),
+                    isActive = activeStateId == state.id,
+                    onClick = { viewModel.selectState(state) }
+                )
+            }
+            
+            if (isMoveMode) StatusInfo("Kliknij w miejsce docelowe...")
+            else if (transitionSourceId != null) StatusInfo("Zaznacz drugi stan aby połączyć.")
         }
-        
-        if (isMoveMode) StatusInfo("Tryb przesuwania: Kliknij w miejsce docelowe...")
-        else if (transitionSourceId != null) StatusInfo("Tryb łączenia: Zaznacz drugi stan i kliknij ikonę połączenia.")
     }
 }
 
@@ -195,83 +278,56 @@ fun SimulationView(viewModel: MainViewModel, innerPadding: PaddingValues) {
     val listState = rememberLazyListState()
 
     LaunchedEffect(history.size) {
-        if (history.isNotEmpty()) {
-            listState.animateScrollToItem(history.size - 1)
-        }
+        if (history.isNotEmpty()) listState.animateScrollToItem(history.size - 1)
     }
 
     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-        // Historia Przejść
         Box(
-            modifier = Modifier
-                .padding(16.dp)
-                .width(220.dp)
-                .height(250.dp)
-                .align(Alignment.TopStart)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+            modifier = Modifier.padding(16.dp).width(220.dp).height(200.dp).align(Alignment.TopStart)
+                .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("HISTORIA PRZEJŚĆ", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text("HISTORIA", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 LazyColumn(state = listState) {
-                    items(history) { entry ->
-                        Text(text = entry, fontSize = 11.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 2.dp))
-                    }
+                    items(history) { entry -> Text(text = entry, fontSize = 10.sp) }
                 }
             }
         }
 
-        // Główny panel
         Column(
             modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = currentState?.name ?: "Wybierz start",
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Text(text = currentState?.name ?: "Błąd", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold)
             Spacer(Modifier.height(24.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
-            ) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
                 Text(
-                    text = currentState?.message?.ifEmpty { "Ten stan nie ma wiadomości." } ?: "Ustaw stan początkowy w edytorze.",
+                    text = currentState?.message?.ifEmpty { "Brak wiadomości." } ?: "Brak danych.",
                     modifier = Modifier.padding(32.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
-            Spacer(Modifier.height(40.dp))
+            Spacer(Modifier.height(32.dp))
             availableTransitions.forEach { transition ->
                 Button(
                     onClick = { viewModel.processSignal(transition.signal) },
-                    modifier = Modifier.fillMaxWidth(0.8f).height(56.dp).padding(vertical = 4.dp),
-                    shape = RoundedCornerShape(16.dp)
+                    modifier = Modifier.fillMaxWidth(0.8f).padding(vertical = 4.dp)
                 ) {
-                    Text(text = transition.signal, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                    Text(text = transition.signal, fontSize = 18.sp)
                 }
             }
             if (availableTransitions.isEmpty() && currentState?.isFinal == true) {
-                Text("🏁 OSIĄGNIĘTO STAN KOŃCOWY", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, modifier = Modifier.padding(24.dp))
+                Text("🏁 OSIĄGNIĘTO KONIEC", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
             }
         }
 
-        // Mini-mapa (Zaktualizowana)
         Box(
-            modifier = Modifier
-                .padding(16.dp)
-                .size(160.dp)
-                .align(Alignment.BottomEnd)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.White.copy(alpha = 0.9f))
+            modifier = Modifier.padding(16.dp).size(150.dp).align(Alignment.BottomEnd)
+                .clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.9f))
                 .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
         ) {
             Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -284,20 +340,16 @@ fun SimulationView(viewModel: MainViewModel, innerPadding: PaddingValues) {
                 viewModel.states.forEach { s ->
                     val isCurrent = s.id == activeStateId
                     drawCircle(
-                        color = if (isCurrent) Color(0xFFFFD700) else Color.LightGray.copy(alpha = 0.8f),
+                        color = if (isCurrent) Color(0xFFFFD700) else Color.LightGray,
                         radius = if (isCurrent) 10f else 6f,
                         center = s.position * scale + Offset(15f, 15f)
                     )
-                    if (isCurrent) {
-                        drawCircle(color = Color(0xFFFFD700).copy(alpha = 0.2f), radius = 18f, center = s.position * scale + Offset(15f, 15f))
-                    }
                 }
             }
-            Text("PODGLĄD GRAFU", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp), fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
         }
         
         Button(
-            onClick = { viewModel.resetSimulation() },
+            onClick = { viewModel.resetSimulation() }, 
             modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
         ) {
