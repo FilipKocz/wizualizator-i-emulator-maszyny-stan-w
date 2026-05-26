@@ -24,12 +24,15 @@ data class Transition(
 )
 
 // Encje Room
+//Nazwa maszyny
 @Entity(tableName = "projects")
 data class ProjectEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String
 )
 
+
+//Przechowuje stany
 @Entity(tableName = "states")
 data class StateEntity(
     @PrimaryKey val id: String,
@@ -42,6 +45,7 @@ data class StateEntity(
     val message: String
 )
 
+//Przechowuje sygnały
 @Entity(tableName = "transitions")
 data class TransitionEntity(
     @PrimaryKey val id: String,
@@ -51,6 +55,9 @@ data class TransitionEntity(
     val signal: String
 )
 
+
+//Klasa relacyjna, która pozwala jednym zapytaniem wyciągnąć z bazy cały porjekt
+//z jego wszystkimi elementami
 data class FullProject(
     @Embedded val project: ProjectEntity,
     @Relation(parentColumn = "id", entityColumn = "projectId")

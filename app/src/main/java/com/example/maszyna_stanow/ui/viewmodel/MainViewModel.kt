@@ -54,10 +54,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _history = mutableStateListOf<String>()
     val history: List<String> = _history
 
+    // Walidacja
     private val _isValid = mutableStateOf(false)
     val isValid: State<Boolean> = _isValid
 
-    private val _validationMessage = mutableStateOf("Brak punktów")
+    private val _validationMessage = mutableStateOf("Brak stanów")
     val validationMessage: State<String> = _validationMessage
 
     fun updateProjectName(newName: String) {
@@ -126,37 +127,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun validateMachine() {
-        val initialState = _states.find { it.isInitial }
-        val finalStates = _states.filter { it.isFinal }
-        if (initialState == null) {
-            _isValid.value = false
-            _validationMessage.value = "Brak punktu START"
+        if (_states.isEmpty()) {
+            _isValid.value = true
+            _validationMessage.value = "Czekam na stany..."
             return
         }
+
+        val finalStates = _states.filter { it.isFinal }
         if (finalStates.isEmpty()) {
             _isValid.value = false
-            _validationMessage.value = "Brak punktu KONIEC"
+            _validationMessage.value = "Błąd: Brak stanów końcowych!"
             return
         }
-        val visited = mutableSetOf<String>()
-        val queue = mutableListOf(initialState.id)
-        visited.add(initialState.id)
-        var foundFinal = false
+
+        // Algorytm: Reverse BFS
+        // Sprawdzamy, które stany mogą dotrzeć do dowolnego stanu końcowego
+        val canReachFinal = mutableSetOf<String>()
+        val queue = mutableListOf<String>()
+
+        // Zaczynamy od finałów
+        finalStates.forEach {
+            canReachFinal.add(it.id)
+            queue.add(it.id)
+        }
+
         while (queue.isNotEmpty()) {
-            val curr = queue.removeAt(0)
-            if (finalStates.any { it.id == curr }) {
-                foundFinal = true
-                break
-            }
-            _transitions.filter { it.fromStateId == curr }.forEach {
-                if (it.toStateId !in visited) {
-                    visited.add(it.toStateId)
-                    queue.add(it.toStateId)
+            val currId = queue.removeAt(0)
+            // Szukamy przejść prowadzących DO tego stanu
+            _transitions.filter { it.toStateId == currId }.forEach { transition ->
+                if (transition.fromStateId !in canReachFinal) {
+                    canReachFinal.add(transition.fromStateId)
+                    queue.add(transition.fromStateId)
                 }
             }
         }
-        _isValid.value = foundFinal
-        _validationMessage.value = if (foundFinal) "Logika poprawna" else "Brak ścieżki do końca"
+
+        // Sprawdzamy czy są jakieś stany-pułapki
+        val deadEndStates = _states.filter { it.id !in canReachFinal }
+
+        if (deadEndStates.isNotEmpty()) {
+            _isValid.value = false
+            val names = deadEndStates.joinToString { it.name }
+            _validationMessage.value = "Błąd: $names nie prowadzą do końca!"
+            return
+        }
+
+        //  Czy mamy punkt startu do symulacji
+        if (_states.none { it.isInitial }) {
+            _isValid.value = false
+            _validationMessage.value = "Błąd: Brak stanu początkowego!"
+            return
+        }
+
+        _isValid.value = true
+        _validationMessage.value = "Logika poprawna: każdy stan prowadzi do celu."
     }
 
     fun addState(name: String, position: Offset) {
