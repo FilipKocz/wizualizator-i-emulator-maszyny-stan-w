@@ -54,11 +54,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _history = mutableStateListOf<String>()
     val history: List<String> = _history
 
+    // Licznik dla unikalnej numeracji stanów
+    private var nextStateNumber = 0
+
     // Walidacja
     private val _isValid = mutableStateOf(false)
     val isValid: State<Boolean> = _isValid
 
-    private val _validationMessage = mutableStateOf("Brak stanów")
+    private val _validationMessage = mutableStateOf("Brak punktów")
     val validationMessage: State<String> = _validationMessage
 
     fun updateProjectName(newName: String) {
@@ -67,6 +70,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createNewProject() {
         currentProjectId = 0L
+        nextStateNumber = 0
         _projectName.value = "Nowy Projekt"
         _states.clear()
         _transitions.clear()
@@ -122,49 +126,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _transitions.addAll(fullProject.transitions.map { 
             Transition(it.id, it.fromStateId, it.toStateId, it.signal) 
         })
+        
+        // Ustalenie następnego numeru stanu na podstawie wczytanych danych
+        val maxNum = _states.mapNotNull { 
+            it.name.removePrefix("S").toIntOrNull() 
+        }.maxOrNull() ?: -1
+        nextStateNumber = maxNum + 1
+        
         _activeStateId.value = _states.find { it.isInitial }?.id
         validateMachine()
     }
 
     fun validateMachine() {
         if (_states.isEmpty()) {
-            _isValid.value = true
-            _validationMessage.value = "Czekam na stany..."
+            _isValid.value = false
+            _validationMessage.value = "Dodaj pierwszy stan"
             return
         }
 
+        val initialState = _states.find { it.isInitial }
         val finalStates = _states.filter { it.isFinal }
+
+        if (initialState == null) {
+            _isValid.value = false
+            _validationMessage.value = "Błąd: Brak stanu początkowego!"
+            return
+        }
         if (finalStates.isEmpty()) {
             _isValid.value = false
             _validationMessage.value = "Błąd: Brak stanów końcowych!"
             return
         }
 
-        // Algorytm: Reverse BFS
-        // Sprawdzamy, które stany mogą dotrzeć do dowolnego stanu końcowego
-        val canReachFinal = mutableSetOf<String>()
-        val queue = mutableListOf<String>()
-
-        // Zaczynamy od finałów
-        finalStates.forEach {
-            canReachFinal.add(it.id)
-            queue.add(it.id)
+        // Sprawdzenie determinizmu (brak 2 różnych wyjść dla tego samego sygnału)
+        for (state in _states) {
+            val outgoingTransitions = _transitions.filter { it.fromStateId == state.id }
+            val signals = outgoingTransitions.map { it.signal }
+            if (signals.size != signals.distinct().size) {
+                _isValid.value = false
+                val duplicateSignal = signals.groupBy { it }.filter { it.value.size > 1 }.keys.firstOrNull()
+                _validationMessage.value = "Błąd: Stan ${state.name} ma duplikaty sygnału '$duplicateSignal'"
+                return
+            }
         }
 
-        while (queue.isNotEmpty()) {
-            val currId = queue.removeAt(0)
-            // Szukamy przejść prowadzących DO tego stanu
-            _transitions.filter { it.toStateId == currId }.forEach { transition ->
-                if (transition.fromStateId !in canReachFinal) {
-                    canReachFinal.add(transition.fromStateId)
-                    queue.add(transition.fromStateId)
+        val reachableFromStart = mutableSetOf<String>()
+        val forwardQueue = mutableListOf(initialState.id)
+        reachableFromStart.add(initialState.id)
+
+        while (forwardQueue.isNotEmpty()) {
+            val curr = forwardQueue.removeAt(0)
+            _transitions.filter { it.fromStateId == curr }.forEach { t ->
+                if (t.toStateId !in reachableFromStart) {
+                    reachableFromStart.add(t.toStateId)
+                    forwardQueue.add(t.toStateId)
                 }
             }
         }
 
-        // Sprawdzamy czy są jakieś stany-pułapki
-        val deadEndStates = _states.filter { it.id !in canReachFinal }
+        val unreachableStates = _states.filter { it.id !in reachableFromStart }
+        if (unreachableStates.isNotEmpty()) {
+            _isValid.value = false
+            val names = unreachableStates.joinToString { it.name }
+            _validationMessage.value = "Błąd: Nieosiągalne: $names"
+            return
+        }
 
+        val canReachFinal = mutableSetOf<String>()
+        val reverseQueue = mutableListOf<String>()
+        finalStates.forEach { canReachFinal.add(it.id); reverseQueue.add(it.id) }
+
+        while (reverseQueue.isNotEmpty()) {
+            val currId = reverseQueue.removeAt(0)
+            _transitions.filter { it.toStateId == currId }.forEach { t ->
+                if (t.fromStateId !in canReachFinal) {
+                    canReachFinal.add(t.fromStateId)
+                    reverseQueue.add(t.fromStateId)
+                }
+            }
+        }
+
+        val deadEndStates = _states.filter { it.id !in canReachFinal }
         if (deadEndStates.isNotEmpty()) {
             _isValid.value = false
             val names = deadEndStates.joinToString { it.name }
@@ -172,18 +214,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        //  Czy mamy punkt startu do symulacji
-        if (_states.none { it.isInitial }) {
-            _isValid.value = false
-            _validationMessage.value = "Błąd: Brak stanu początkowego!"
-            return
-        }
-
         _isValid.value = true
-        _validationMessage.value = "Logika poprawna: każdy stan prowadzi do celu."
+        _validationMessage.value = "Logika poprawna: graf spójny."
     }
 
-    fun addState(name: String, position: Offset) {
+    fun addState(position: Offset) {
+        val name = "S$nextStateNumber"
+        nextStateNumber++
         _states.add(StateNode(UUID.randomUUID().toString(), name, position, false, false))
         validateMachine()
     }
@@ -242,16 +279,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleSimulation(act: Boolean) { _isSimulationActive.value = act; if (act) resetSimulation() }
     fun selectState(s: StateNode?) { _selectedState.value = s; _selectedTransition.value = null }
     fun selectTransition(t: Transition?) { _selectedTransition.value = t; _selectedState.value = null }
-    fun resetSimulation() { _activeStateId.value = _states.find { it.isInitial }?.id; _history.clear() }
+    
+    fun resetSimulation() { 
+        val initial = _states.find { it.isInitial }
+        _activeStateId.value = initial?.id
+        _history.clear() 
+        if (initial?.message?.isNotEmpty() == true) {
+            _history.add("💬 [${initial.name}]: ${initial.message}")
+        }
+    }
 
     fun processSignal(sig: String) {
         val currId = _activeStateId.value ?: return
-        val t = _transitions.find { it.fromStateId == currId && it.signal == sig }
-        if (t != null) {
-            val fromName = _states.find { it.id == currId }?.name ?: ""
-            val toName = _states.find { it.id == t.toStateId }?.name ?: ""
+        val transition = _transitions.find { it.fromStateId == currId && it.signal == sig }
+        if (transition != null) {
+            val fromState = _states.find { it.id == currId }
+            val toState = _states.find { it.id == transition.toStateId }
+            
+            val fromName = fromState?.name ?: ""
+            val toName = toState?.name ?: ""
+            
             _history.add("$fromName --($sig)--> $toName")
-            _activeStateId.value = t.toStateId
+            
+            if (toState?.message?.isNotEmpty() == true) {
+                _history.add("💬 [${toName}]: ${toState.message}")
+            }
+            
+            _activeStateId.value = transition.toStateId
         }
     }
 

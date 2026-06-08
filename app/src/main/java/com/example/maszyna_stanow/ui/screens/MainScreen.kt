@@ -8,7 +8,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -16,12 +15,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
@@ -29,7 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.maszyna_stanow.model.Transition
 import com.example.maszyna_stanow.ui.components.StateNodeView
 import com.example.maszyna_stanow.ui.viewmodel.MainViewModel
 import kotlin.math.*
@@ -94,7 +91,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         floatingActionButton = {
             if (!isSimulationActive && transitionSourceId == null) {
                 FloatingActionButton(onClick = {
-                    viewModel.addState("S${viewModel.states.size}", Offset(200f, 300f))
+                    viewModel.addState(Offset(200f, 300f))
                 }) {
                     Icon(Icons.Default.Add, contentDescription = "Dodaj stan")
                 }
@@ -234,21 +231,8 @@ fun EditorView(viewModel: MainViewModel, innerPadding: PaddingValues) {
                         val start = fromState.position + Offset(40.dp.toPx(), 40.dp.toPx())
                         val end = toState.position + Offset(40.dp.toPx(), 40.dp.toPx())
                         val isSelected = selectedTransition?.id == transition.id
-                        drawLine(
-                            color = if (isSelected) Color.Blue else Color.Black,
-                            start = start, end = end,
-                            strokeWidth = if (isSelected) 8f else 4f,
-                            cap = StrokeCap.Round
-                        )
-                        drawArrowHead(start, end, color = if (isSelected) Color.Blue else Color.Black)
-                        drawContext.canvas.nativeCanvas.drawText(
-                            transition.signal, (start.x + end.x) / 2, (start.y + end.y) / 2 - 20f,
-                            android.graphics.Paint().apply {
-                                color = android.graphics.Color.BLACK
-                                textSize = 35f
-                                textAlign = android.graphics.Paint.Align.CENTER
-                            }
-                        )
+                        
+                        drawTransition(transition, start, end, isSelected)
                     }
                 }
             }
@@ -257,14 +241,96 @@ fun EditorView(viewModel: MainViewModel, innerPadding: PaddingValues) {
                 StateNodeView(
                     stateNode = state,
                     isSelected = selectedState?.id == state.id,
-                    isMoveMode = isMoveMode || (transitionSourceId != null && selectedState?.id == state.id),
+                    isMoveMode = isMoveMode,
                     isActive = activeStateId == state.id,
                     onClick = { viewModel.selectState(state) }
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun MiniMapView(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+    val states = viewModel.states
+    val transitions = viewModel.transitions
+    val activeStateId by viewModel.activeStateId
+
+    if (states.isEmpty()) return
+
+    Card(
+        modifier = modifier,
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            val stateRadius = 40.dp.toPx()
             
-            if (isMoveMode) StatusInfo("Kliknij w miejsce docelowe...")
-            else if (transitionSourceId != null) StatusInfo("Zaznacz drugi stan aby połączyć.")
+            val minX = states.minOf { it.position.x } - stateRadius
+            val minY = states.minOf { it.position.y } - stateRadius
+            val maxX = states.maxOf { it.position.x } + stateRadius * 2
+            val maxY = states.maxOf { it.position.y } + stateRadius * 2
+
+            val contentWidth = maxX - minX
+            val contentHeight = maxY - minY
+            
+            val scaleX = size.width / contentWidth
+            val scaleY = size.height / contentHeight
+            val scale = min(scaleX, scaleY).coerceAtMost(1f)
+
+            val centeringOffsetX = (size.width - contentWidth * scale) / 2
+            val centeringOffsetY = (size.height - contentHeight * scale) / 2
+
+            withTransform({
+                translate(centeringOffsetX - minX * scale, centeringOffsetY - minY * scale)
+                scale(scale, scale, pivot = Offset.Zero)
+            }) {
+                transitions.forEach { transition ->
+                    val fromState = states.find { it.id == transition.fromStateId }
+                    val toState = states.find { it.id == transition.toStateId }
+                    if (fromState != null && toState != null) {
+                        val start = fromState.position + Offset(stateRadius, stateRadius)
+                        val end = toState.position + Offset(stateRadius, stateRadius)
+                        drawTransition(transition, start, end, isSelected = false)
+                    }
+                }
+
+                states.forEach { state ->
+                    val isActive = state.id == activeStateId
+                    val center = state.position + Offset(stateRadius, stateRadius)
+                    
+                    val backgroundColor = when {
+                        state.isInitial -> Color(0xFFBBDEFB)
+                        state.isFinal -> Color(0xFFFFCCBC)
+                        else -> Color.White
+                    }
+
+                    drawCircle(
+                        color = backgroundColor,
+                        radius = stateRadius,
+                        center = center
+                    )
+                    
+                    drawCircle(
+                        color = if (isActive) Color(0xFFFFD700) else Color.Black,
+                        radius = stateRadius,
+                        center = center,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isActive) 6.dp.toPx() else 2.dp.toPx())
+                    )
+                    
+                    drawContext.canvas.nativeCanvas.drawText(
+                        state.name,
+                        center.x,
+                        center.y + 10f,
+                        android.graphics.Paint().apply {
+                            textSize = 30f
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            isFakeBoldText = isActive
+                            color = android.graphics.Color.BLACK
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -272,129 +338,212 @@ fun EditorView(viewModel: MainViewModel, innerPadding: PaddingValues) {
 @Composable
 fun SimulationView(viewModel: MainViewModel, innerPadding: PaddingValues) {
     val activeStateId by viewModel.activeStateId
-    val currentState = viewModel.states.find { it.id == activeStateId }
-    val availableTransitions = viewModel.transitions.filter { it.fromStateId == activeStateId }
     val history = viewModel.history
-    val listState = rememberLazyListState()
+    val activeState = viewModel.states.find { it.id == activeStateId }
 
-    LaunchedEffect(history.size) {
-        if (history.isNotEmpty()) listState.animateScrollToItem(history.size - 1)
-    }
+    Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(16.dp)) {
+        Text("Mini Mapa:", style = MaterialTheme.typography.titleSmall)
+        MiniMapView(
+            viewModel = viewModel,
+            modifier = Modifier.fillMaxWidth().height(180.dp).padding(vertical = 8.dp)
+        )
 
-    Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-        Box(
-            modifier = Modifier.padding(16.dp).width(220.dp).height(200.dp).align(Alignment.TopStart)
-                .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("HISTORIA", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                LazyColumn(state = listState) {
-                    items(history) { entry -> Text(text = entry, fontSize = 10.sp) }
-                }
-            }
-        }
-
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(text = currentState?.name ?: "Błąd", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold)
-            Spacer(Modifier.height(24.dp))
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Aktywny stan:", style = MaterialTheme.typography.labelLarge)
                 Text(
-                    text = currentState?.message?.ifEmpty { "Brak wiadomości." } ?: "Brak danych.",
-                    modifier = Modifier.padding(32.dp),
-                    fontSize = 18.sp,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    text = activeState?.name ?: "Brak",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
                 )
-            }
-            Spacer(Modifier.height(32.dp))
-            availableTransitions.forEach { transition ->
-                Button(
-                    onClick = { viewModel.processSignal(transition.signal) },
-                    modifier = Modifier.fillMaxWidth(0.8f).padding(vertical = 4.dp)
-                ) {
-                    Text(text = transition.signal, fontSize = 18.sp)
+                if (activeState?.message?.isNotEmpty() == true) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = activeState.message,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                    }
                 }
-            }
-            if (availableTransitions.isEmpty() && currentState?.isFinal == true) {
-                Text("🏁 OSIĄGNIĘTO KONIEC", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
-            }
-        }
-
-        Box(
-            modifier = Modifier.padding(16.dp).size(150.dp).align(Alignment.BottomEnd)
-                .clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.9f))
-                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                val scale = 0.12f
-                viewModel.transitions.forEach { t ->
-                    val from = viewModel.states.find { it.id == t.fromStateId }?.position ?: Offset.Zero
-                    val to = viewModel.states.find { it.id == t.toStateId }?.position ?: Offset.Zero
-                    drawLine(Color.LightGray, from * scale + Offset(15f, 15f), to * scale + Offset(15f, 15f), strokeWidth = 2f)
-                }
-                viewModel.states.forEach { s ->
-                    val isCurrent = s.id == activeStateId
-                    drawCircle(
-                        color = if (isCurrent) Color(0xFFFFD700) else Color.LightGray,
-                        radius = if (isCurrent) 10f else 6f,
-                        center = s.position * scale + Offset(15f, 15f)
+                if (activeState?.isFinal == true) {
+                    Spacer(Modifier.height(8.dp))
+                    SuggestionChip(
+                        onClick = {},
+                        label = { Text("Stan końcowy") },
+                        icon = { Icon(Icons.Default.Check, null) }
                     )
                 }
             }
         }
+
+        Spacer(Modifier.height(24.dp))
+        Text("Dostępne sygnały:", style = MaterialTheme.typography.titleMedium)
+        
+        val availableTransitions = viewModel.transitions.filter { it.fromStateId == activeStateId }
+        
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            availableTransitions.forEach { transition ->
+                Button(onClick = { viewModel.processSignal(transition.signal) }) {
+                    Text(transition.signal)
+                }
+            }
+            if (availableTransitions.isEmpty()) {
+                Text("Brak wychodzących przejść", color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Text("Historia i Wiadomości:", style = MaterialTheme.typography.titleMedium)
+        
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp)
+                .background(Color.LightGray.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                .padding(8.dp),
+            reverseLayout = true
+        ) {
+            items(history.reversed()) { entry ->
+                val isMessage = entry.startsWith("💬")
+                Text(
+                    text = entry,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    color = if (isMessage) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                    fontWeight = if (isMessage) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+        }
         
         Button(
-            onClick = { viewModel.resetSimulation() }, 
-            modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+            onClick = { viewModel.resetSimulation() },
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
         ) {
-            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Refresh, null)
             Spacer(Modifier.width(8.dp))
-            Text("RESET")
+            Text("Resetuj symulację")
         }
     }
 }
 
-private fun findClickedTransition(viewModel: MainViewModel, clickOffset: Offset): Transition? {
-    val threshold = 30f
-    return viewModel.transitions.find { transition ->
-        val from = viewModel.states.find { it.id == transition.fromStateId }?.let { it.position + Offset(110f, 110f) }
-        val to = viewModel.states.find { it.id == transition.toStateId }?.let { it.position + Offset(110f, 110f) }
-        if (from != null && to != null) distanceFromPointToLine(clickOffset, from, to) < threshold else false
+private fun DrawScope.drawTransition(transition: com.example.maszyna_stanow.model.Transition, start: Offset, end: Offset, isSelected: Boolean) {
+    val color = if (isSelected) Color.Blue else Color.Black
+    val strokeWidth = if (isSelected) 4.dp.toPx() else 2.dp.toPx()
+    
+    if (start == end) {
+        val rectSize = 60.dp.toPx()
+        drawArc(
+            color = color,
+            startAngle = -90f,
+            sweepAngle = 270f,
+            useCenter = false,
+            topLeft = start - Offset(rectSize / 2, rectSize),
+            size = androidx.compose.ui.geometry.Size(rectSize, rectSize),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth)
+        )
+        drawArrowHead(color, start - Offset(0f, -2.dp.toPx()), -10f)
+        
+        drawContext.canvas.nativeCanvas.drawText(
+            transition.signal,
+            start.x,
+            start.y - rectSize - 5f,
+            android.graphics.Paint().apply {
+                textSize = 40f
+                textAlign = android.graphics.Paint.Align.CENTER
+                isFakeBoldText = isSelected
+            }
+        )
+    } else {
+        val angle = atan2(end.y - start.y, end.x - start.x)
+        val stateRadius = 40.dp.toPx()
+        
+        val actualStart = start + Offset(cos(angle) * stateRadius, sin(angle) * stateRadius)
+        val actualEnd = end - Offset(cos(angle) * stateRadius, sin(angle) * stateRadius)
+
+        drawLine(
+            color = color,
+            start = actualStart,
+            end = actualEnd,
+            strokeWidth = strokeWidth
+        )
+        
+        drawArrowHead(color, actualEnd, Math.toDegrees(angle.toDouble()).toFloat())
+        
+        val midX = (actualStart.x + actualEnd.x) / 2
+        val midY = (actualStart.y + actualEnd.y) / 2
+        
+        drawContext.canvas.nativeCanvas.drawText(
+            transition.signal,
+            midX,
+            midY - 10f,
+            android.graphics.Paint().apply {
+                textSize = 40f
+                textAlign = android.graphics.Paint.Align.CENTER
+                isFakeBoldText = isSelected
+            }
+        )
     }
 }
 
-private fun distanceFromPointToLine(p: Offset, a: Offset, b: Offset): Float {
-    val l2 = (b.x - a.x).pow(2) + (b.y - a.y).pow(2)
+private fun DrawScope.drawArrowHead(color: Color, tip: Offset, angleDegrees: Float) {
+    val arrowSize = 15.dp.toPx()
+    val angleRad = Math.toRadians(angleDegrees.toDouble())
+    
+    val p1 = tip - Offset(
+        (arrowSize * cos(angleRad - PI / 6)).toFloat(),
+        (arrowSize * sin(angleRad - PI / 6)).toFloat()
+    )
+    val p2 = tip - Offset(
+        (arrowSize * cos(angleRad + PI / 6)).toFloat(),
+        (arrowSize * sin(angleRad + PI / 6)).toFloat()
+    )
+    
+    val path = Path().apply {
+        moveTo(tip.x, tip.y)
+        lineTo(p1.x, p1.y)
+        lineTo(p2.x, p2.y)
+        close()
+    }
+    drawPath(path, color)
+}
+
+private fun findClickedTransition(viewModel: MainViewModel, click: Offset): com.example.maszyna_stanow.model.Transition? {
+    for (t in viewModel.transitions) {
+        val fromState = viewModel.states.find { it.id == t.fromStateId }
+        val toState = viewModel.states.find { it.id == t.toStateId }
+        if (fromState != null && toState != null) {
+            val start = fromState.position + Offset(110f, 110f)
+            val end = toState.position + Offset(110f, 110f)
+            
+            if (start == end) {
+                val dist = sqrt((click.x - start.x).pow(2) + (click.y - (start.y - 60f)).pow(2))
+                if (abs(dist - 60f) < 20f) return t
+            } else {
+                val d = distanceToSegment(click, start, end)
+                if (d < 30f) return t
+            }
+        }
+    }
+    return null
+}
+
+private fun distanceToSegment(p: Offset, a: Offset, b: Offset): Float {
+    val l2 = (a.x - b.x).pow(2) + (a.y - b.y).pow(2)
     if (l2 == 0f) return sqrt((p.x - a.x).pow(2) + (p.y - a.y).pow(2))
     var t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2
     t = max(0f, min(1f, t))
     return sqrt((p.x - (a.x + t * (b.x - a.x))).pow(2) + (p.y - (a.y + t * (b.y - a.y))).pow(2))
-}
-
-fun DrawScope.drawArrowHead(start: Offset, end: Offset, color: Color) {
-    val angle = atan2(end.y - start.y, end.x - start.x)
-    val arrowLength = 25f
-    val arrowAngle = Math.toRadians(30.0)
-    val radius = 42.dp.toPx()
-    val arrowTip = Offset(end.x - radius * cos(angle), end.y - radius * sin(angle))
-    val path = Path().apply {
-        moveTo(arrowTip.x, arrowTip.y)
-        lineTo(arrowTip.x - arrowLength * cos(angle - arrowAngle).toFloat(), arrowTip.y - arrowLength * sin(angle - arrowAngle).toFloat())
-        moveTo(arrowTip.x, arrowTip.y)
-        lineTo(arrowTip.x - arrowLength * cos(angle + arrowAngle).toFloat(), arrowTip.y - arrowLength * sin(angle + arrowAngle).toFloat())
-    }
-    drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 6f))
-}
-
-@Composable
-fun StatusInfo(text: String) {
-    Surface(color = Color.Green.copy(alpha = 0.1f), modifier = Modifier.fillMaxWidth()) {
-        Text(text = text, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodyLarge)
-    }
 }
