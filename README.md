@@ -28,6 +28,6 @@ Filip Koczorowski
 
 
 🛠 Jak uruchomić:
-Klonowanie repozytorium.
-Otwieranie projektu w Android Studio.
-Uruchamianie przez IDE oraz przez wiersz poleceń (./gradlew installDebug)
+1. Pobierz: Użyj komendy git clone https://github.com/FilipKocz/wizualizator-i-emulator-maszyny-stan-w lub pobierz ZIP i rozpakuj.
+2. Otwórz: Uruchom Android Studio, wybierz Open i wskaż folder projektu (poczekaj na synchronizację Gradle).
+3. Uruchom: Podłącz telefon lub włącz emulator i kliknij zieloną ikonę Run (Shift + F10).
