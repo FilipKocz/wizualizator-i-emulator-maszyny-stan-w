@@ -25,3 +25,9 @@ Zarządzanie stanem: Kotlin Coroutines & Flow.
 
 👤 Autor
 Filip Koczorowski
+
+
+🛠 Jak uruchomić:
+Klonowanie repozytorium.
+Otwieranie projektu w Android Studio.
+Uruchamianie przez IDE oraz przez wiersz poleceń (./gradlew installDebug)
